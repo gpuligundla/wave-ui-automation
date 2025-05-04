@@ -250,10 +250,12 @@ class WaveUI:
             # Find and click the Export button in the toolbar
             toolbar = self.main_window.child_window(auto_id=TOOLBAR_ID, control_type="ToolBar")
             export_button = toolbar.child_window(title=BUTTON_EXPORT)
-            export_button.wait('ready', DEFAULT_TIMEOUT)
+            export_button.wait('ready', 15)
             export_button.click_input()
             logger.info("Clicked Export button")
-            
+             
+            dropdown_item = self.main_window.child_window(title="Excel", control_type="MenuItem")
+            dropdown_item.wait('ready', timeout=15)
             # Select Excel format from dropdown
             keyboard.send_keys("{DOWN}")
             keyboard.send_keys("{ENTER}")
