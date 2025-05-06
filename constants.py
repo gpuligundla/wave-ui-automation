@@ -30,6 +30,11 @@ UI_FIELDS = {
         "auto_id": "FeedPressureRO",
         "class_name": "TextBox"
     },
+    "boost_pressure": {
+        "type": "edit",
+        "auto_id": "txtStr5",
+        "class_name": "TextBox"
+    },
     "feed_flow_rate": {
         "type": "edit",
         "class_name": "TextBox",
@@ -38,7 +43,7 @@ UI_FIELDS = {
     },
     "element_type": {
         "type": "combo",
-        "auto_id": "0",
+        "auto_id": ["0", "1", "2"], 
         "class_name": "ComboBox"
     },
     "detailed_report": {
@@ -76,7 +81,8 @@ DEFAULT_PARAMETERS = {
     "els_per_pv": 1,
     "element_type": "NF90-4040",
     "feed_pressure": 10,
-    "boost_pressure": 10
+    "target_pressure": 10,
+    "pressure_factor": 1
 }
 
 # Parameter ranges for sweep
@@ -105,4 +111,4 @@ SAVE_FILE_TIMEOUT = 2
 
 # Export settings
 EXPORT_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "WAVE_Reports")
-EXPORT_FILENAME_TEMPLATE = "WAVE_Report_PV{pv}_ELS{els}_Pressure{pressure}"
+EXPORT_FILENAME_TEMPLATE = "WAVE_Report_Stage{stage}_PV{pv}_ELS{els}_Pressure{pressure}"

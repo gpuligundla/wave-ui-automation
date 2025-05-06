@@ -1,1 +1,3 @@
 pywinauto
+pandas
+openpyxl
