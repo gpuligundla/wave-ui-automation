@@ -50,7 +50,7 @@ def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None):
         project_name = common['project_name']
         case_name = common['case_name']
         feed_flow_rate = common['feed_flow_rate']
-        
+        export_dir = common['export_dir']
         # Get configurations for current and previous stages
         stage_configs = config['stages'][:stage_to_run]
         
@@ -62,7 +62,8 @@ def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None):
             case_name=case_name,
             feed_flow_rate=feed_flow_rate,
             stages=stage_to_run,
-            prev_stage_excel_file=prev_stage_excel
+            prev_stage_excel_file=prev_stage_excel,
+            export_dir=export_dir
         )
         
         # Run parameter sweep with all stage configurations

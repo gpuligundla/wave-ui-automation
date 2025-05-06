@@ -7,11 +7,14 @@ import time
 import itertools
 import logging
 import pandas as pd
+import json
+import re
+from datetime import datetime
 
 from constants import (
     WINDOW_TITLE_PATTERN, TAB_REVERSE_OSMOSIS, TAB_SUMMARY_REPORT, 
     UI_FIELDS, BUTTON_DETAILED_REPORT, BUTTON_EXPORT, 
-    TOOLBAR_ID, EXPORT_DIR, EXPORT_FILENAME_TEMPLATE,
+    TOOLBAR_ID, EXPORT_DIR,
     EXIT_DIALOG_TITLE, APPLICATION_LOAD_TIMEOUT, 
     TAB_SWITCH_TIMEOUT, DEFAULT_TIMEOUT, WINDOW_VISIBLE_TIMEOUT, SAVE_DIALOG_CLASS
 )
@@ -25,7 +28,7 @@ class WaveUI:
     """
     
     def __init__(self, file_name, project_path, project_name, case_name, feed_flow_rate=2.1, stages=1, 
-                 prev_stage_excel_file=None):
+                 prev_stage_excel_file=None, export_dir=EXPORT_DIR):
         """
         Initialize the WaveUI automation class.
         
@@ -45,12 +48,113 @@ class WaveUI:
         self.feed_flow_rate = feed_flow_rate
         self.stages = stages
         self.prev_stage_excel_file = prev_stage_excel_file
-        
+
         self.app = None
         self.main_window = None
         
-        self.export_dir = check_and_create_results_directory(EXPORT_DIR)
-    
+        self.export_dir = check_and_create_results_directory(export_dir)
+        self.report_counter = 1
+        
+        # Setup metadata tracking
+        self.metadata_file = os.path.join(self.export_dir, 'report_metadata.csv')
+        
+        # Initialize or load existing metadata
+        if os.path.exists(self.metadata_file):
+            try:
+                self.metadata_df = pd.read_csv(self.metadata_file)
+                # Get highest report number to continue the sequence
+                if not self.metadata_df.empty and 'report_id' in self.metadata_df.columns:
+                    max_id = self.metadata_df['report_id'].max()
+                    self.report_counter = int(max_id) + 1
+                    logger.info(f"Continuing from report #{self.report_counter}")
+            except Exception as e:
+                logger.error(f"Error loading existing metadata file: {e}")
+                self.metadata_df = self._create_empty_metadata_df()
+        else:
+            self.metadata_df = pd.DataFrame(columns=[
+            'filename', 
+            'timestamp',
+            'current_stage_params', 
+            'previous_stages_params'
+        ])
+            logger.info("Created new metadata tracking file")
+
+    def generate_report_filename(self):
+        """Generate an incremental filename for reports"""
+        return f"wave_report_{self.report_counter:04d}.xls"
+
+    def add_metadata_entry(self, stage_params, prev_stage_params=None):
+        """
+        Add a metadata entry for the current report.
+        
+        Args:
+            stage_params (dict): Parameters for the current stage
+            prev_stage_params (list, optional): List of parameter tuples for previous stages
+            
+        Returns:
+            str: Generated filename
+        """
+        filename = self.generate_report_filename()
+        
+        # Convert parameters to JSON strings for easy storage and parsing
+        current_params_json = json.dumps(stage_params)
+        
+        # Create structured data for previous stages if available
+        if prev_stage_params:
+            prev_stages_data = []
+            for i, params in enumerate(prev_stage_params):
+                # params typically is (pv, els, element_type, pressure)
+                stage_num = i + 1
+                prev_stage_dict = {
+                    'stage': stage_num,
+                    'pv': params[0],
+                    'els': params[1],
+                    'element_type': params[2]
+                }
+                
+                # Add appropriate pressure fields based on stage number
+                if stage_num == 1:
+                    prev_stage_dict['feed_pressure'] = params[3]
+                else:
+                    # For stage > 1, we have boost pressure, and need to calculate target pressure
+                    prev_stage_dict['target_pressure'] = params[3]
+                    # If target pressure was provided in 5th position, use it
+                    if len(params) > 4:
+                        prev_stage_dict['boost_pressure'] = params[4]
+                
+                prev_stages_data.append(prev_stage_dict)
+            prev_stages_json = json.dumps(prev_stages_data)
+        else:
+            prev_stages_json = json.dumps([])
+        
+        # Add entry to metadata DataFrame
+        new_row = {
+            'filename': filename,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'current_stage_params': current_params_json,
+            'previous_stages_params': prev_stages_json
+        }
+        
+        self.metadata_df = pd.concat([self.metadata_df, pd.DataFrame([new_row])], ignore_index=True)
+        
+        # Save metadata after each addition to prevent data loss
+        self.save_metadata()
+        
+        # Increment counter for next report
+        self.report_counter += 1
+        
+        return filename
+
+    def save_metadata(self):
+        """Save metadata to CSV file"""
+        try:
+            self.metadata_df.to_csv(self.metadata_file, index=False)
+            logger.debug(f"Updated metadata file: {self.metadata_file}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving metadata: {e}")
+            return False
+
     def launch_wave(self):
         """
         Launches the WAVE application with the specified file.
@@ -134,10 +238,15 @@ class WaveUI:
             if self.stages == 1:
                 self._set_stage_reverse_osmosis_parameters(self.stages, pv_per_stage, els_per_pv, element_type, pressure)
             else:
-                logger.info(f"Previous stage(s) values are {prev_stage_params} of format (pv, els, pressure)")
+                logger.info(f"Previous stage(s) values are {prev_stage_params} of format (pv, els, element_type pressure, *boost_pressure)")
                 cur_params = (pv_per_stage, els_per_pv, element_type, pressure)
-                params = prev_stage_params + (cur_params,) 
-                for cur_stage, (pv, els, ele_type, pressure) in enumerate(params, start=1):
+                params = prev_stage_params + (cur_params,)
+                for cur_stage, values in enumerate(params, start=1):
+                    if len(values) == 4:
+                        pv, els, ele_type, pressure = values
+                    elif len(values) == 5:
+                        pv, els, ele_type, pressure, boost_pressure = values
+                        pressure = boost_pressure
                     self._set_stage_reverse_osmosis_parameters(cur_stage, pv, els, ele_type, pressure)
             return True
         except Exception as e:
@@ -313,51 +422,189 @@ class WaveUI:
         except Exception as e:
             logger.error(f"Error handling exit confirmation: {e}")
             return False
-    
-    def get_feed_pressure_from_excel(self, stage, pv, els, pressure):
+
+    def get_pressure_from_excel(self, stage, pv, els, element_type, pressure, prev_stage_params=None):
         """
-        Get feed pressure from a specific stage's Excel report.
+        Get feed pressure from a specific stage's Excel report by using metadata.
         
         Args:
-            stage (int): Stage number of the Excel report
-            pv (int): PV value used in filename
-            els (int): ELS value to look up in excel
-            pressure (float): Pressure value used in filename
+            stage (int): Current stage number
+            pv (int): PV value for current stage
+            els (int): ELS value for current stage
+            element_type (str): Element type for current stage
+            pressure (float): Pressure value for current stage (feed_pressure for stage 1, boost_pressure for stages > 1)
+            prev_stage_params (list, optional): List of previous stage parameter tuples
             
         Returns:
-            float: Feed pressure value rounded to 1 decimal place if found, None otherwise
+            tuple: (boost_pressure, feed_pressure) both rounded to 1 decimal place if found, (float|None, float|None) otherwise
         """
         try:
-            # Construct filename for the Excel report
-            filename = f"{EXPORT_FILENAME_TEMPLATE.format(stage=stage, pv=pv, els=els, pressure=pressure)}.xls"
+            logger.info(f"Looking up feed pressure from Excel file: {self.prev_stage_excel_file}")
             
-            # Read the element_flow sheet
-            df = pd.read_excel(self.prev_stage_excel_file, sheet_name='element_flow')
+            # Read the metadata sheet from the Excel file
+            metadata_df = pd.read_excel(self.prev_stage_excel_file, sheet_name='Metadata')
+            logger.info(f"Loaded metadata with {len(metadata_df)} rows")
             
-            # Find the row where the filename matches a cell value
-            matching_rows = df.apply(lambda row: row.astype(str).str.contains(filename).any(), axis=1)
+            # Create current stage parameters for matching
+            current_params = {
+                'stage': stage,
+                'pv': pv, 
+                'els': els,
+                'element_type': element_type
+            }
+            
+            # Add appropriate pressure field based on stage number
+            if stage == 1:
+                current_params['feed_pressure'] = pressure
+            else:
+                current_params['target_pressure'] = pressure
+            
+            # Create previous stage parameters list if available
+            if prev_stage_params:
+                prev_stages_data = []
+                for i, params in enumerate(prev_stage_params):
+                    # params typically is (pv, els, element_type, pressure)
+                    stage_num = i + 1
+                    prev_stage_dict = {
+                        'stage': stage_num,
+                        'pv': params[0],
+                        'els': params[1],
+                        'element_type': params[2]
+                    }
+                    
+                    # Add appropriate pressure fields based on stage number
+                    if stage_num == 1:
+                        prev_stage_dict['feed_pressure'] = params[3]
+                    else:
+                        prev_stage_dict['target_pressure'] = params[3]
+                        # If boost pressure was provided in 5th position, use it
+                        if len(params) > 4:
+                            prev_stage_dict['boost_pressure'] = params[4]
+                    
+                    prev_stages_data.append(prev_stage_dict)
+            
+            # Parse JSON strings in the DataFrame for comparison
+            metadata_df['current_stage_params'] = metadata_df['current_stage_params'].apply(
+                lambda x: json.loads(x) if isinstance(x, str) else x
+            )
+            metadata_df['previous_stages_params'] = metadata_df['previous_stages_params'].apply(
+                lambda x: json.loads(x) if isinstance(x, str) else x
+            )
+            
+            # Find matching row based on parameters
+            matched_row = None
+            for idx, row in metadata_df.iterrows():
+                cur_params = row['current_stage_params']
+                prev_params = row['previous_stages_params']
+                
+                # Check if basic parameters match
+                if (cur_params.get('stage') == current_params['stage'] and
+                    cur_params.get('pv') == current_params['pv'] and
+                    cur_params.get('els') == current_params['els'] and
+                    cur_params.get('element_type') == current_params['element_type']):
+                    
+                    # Check appropriate pressure field based on stage
+                    if stage == 1:
+                        if cur_params.get('feed_pressure') != current_params['feed_pressure']:
+                            continue
+                    else:
+                        if cur_params.get('target_pressure') != current_params['target_pressure']:
+                            continue
+                    
+                    # If previous parameters are also required, check them too
+                    if prev_stage_params:
+                        prev_match = True
+                        if len(prev_params) != len(prev_stages_data):
+                            prev_match = False
+                        else:
+                            for i, prev_param in enumerate(prev_params):
+                                stage_num = i + 1
+                                expected_param = prev_stages_data[i]
+                                
+                                # Check basic parameters
+                                if (prev_param.get('pv') != expected_param['pv'] or
+                                    prev_param.get('els') != expected_param['els'] or
+                                    prev_param.get('element_type') != expected_param['element_type']):
+                                    prev_match = False
+                                    break
+                                    
+                                # Check appropriate pressure field based on stage
+                                if stage_num == 1:
+                                    if prev_param.get('feed_pressure') != expected_param['feed_pressure']:
+                                        prev_match = False
+                                        break
+                                else:
+                                    if prev_param.get('target_pressure') != expected_param['target_pressure']:
+                                        prev_match = False
+                                        break
+                                    # Check boost pressure if provided
+                                    if 'boost_pressure' in expected_param and (
+                                        'boost_pressure' not in prev_param or 
+                                        prev_param.get('boost_pressure') != expected_param['boost_pressure']):
+                                        prev_match = False
+                                        break
+                        
+                        if not prev_match:
+                            continue
+                    
+                    matched_row = row
+                    break
+            
+            if matched_row is None:
+                pressure_field = 'feed_pressure' if stage == 1 else 'target_pressure'
+                logger.error(f"No matching report found for stage {stage}, PV {pv}, ELS {els}, {pressure_field}: {pressure}")
+                return None, None
+            
+            # Get the filename from the matched row
+            filename = matched_row['filename']
+            logger.info(f"Found matching report: {filename}")
+            
+            # Now read the element_flow sheet to get the feed pressure
+            element_flow_df = pd.read_excel(self.prev_stage_excel_file, sheet_name='element_flow')
+            
+            # Find the row containing the filename
+            matching_rows = element_flow_df.apply(
+                lambda r: any(str(filename) in str(cell) for cell in r), axis=1
+            )
+            
             if not matching_rows.any():
-                logger.error(f"No row found containing filename {filename}")
-                return None
+                logger.error(f"No row found containing filename {filename} in element_flow sheet")
+                return None,None
                 
             row_idx = matching_rows[matching_rows].index[0]
             
-            # Construct column name for the feed pressure
-            column_name = f'row_{els}_Feed_Press'
-            
+            # Find columns that match the pattern 'row_*_Feed_Press'
+            feed_press_columns = []
+            pattern = re.compile(r'row_(\d+)_Feed_Press')
+
+            for col in element_flow_df.columns:
+                if pattern.match(col):
+                    feed_press_columns.append(col)
+
+            if not feed_press_columns:
+                logger.error("No Feed_Press columns found in element_flow sheet")
+                return None, None
+
+            # Sort columns by the numeric part
+            feed_press_columns.sort(key=lambda x: int(re.match(r'row_(\d+)_Feed_Press', x).group(1)))
+            column_name = feed_press_columns[-1]
+
+            logger.info(f"Using last Feed_Press column: {column_name}")
+
             # Get the cell value at the found row and specified column and round to 1 decimal
-            if column_name in df.columns:
-                feed_pressure = df.loc[row_idx, column_name]
-                rounded_pressure = round(float(feed_pressure), 1)
-                logger.info(f"Found feed pressure {rounded_pressure} for stage {stage}, ELS {els}")
-                return rounded_pressure
-            else:
-                logger.error(f"Column {column_name} not found in Excel file")
-                return None
+            feed_pressure = element_flow_df.loc[row_idx, column_name]
+            rounded_feed_pressure = round(float(feed_pressure), 1)
+            logger.info(f"Found feed pressure {rounded_feed_pressure} for stage {stage}")
+
+            # get the boost pressure
+            boost_pressure = matched_row['current_stage_params'].get("boost_pressure", None)
+            return boost_pressure, rounded_feed_pressure
                 
         except Exception as e:
             logger.error(f"Error reading Excel file: {e}")
-            return None
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, None
 
     def get_valid_target_pressures(self, target_range, feed_pressure):
         """
@@ -376,7 +623,7 @@ class WaveUI:
             if boost > 0:
                 valid_pressures.append(target)
         return valid_pressures
-
+    
     def run_parameter_sweep(self, stage_configs):
         """
         Runs parameter sweep considering all previous stages.
@@ -393,7 +640,6 @@ class WaveUI:
             
         successful_runs = 0
         total_combinations = 0
-        
         try:
             if self.stages == 1:
                 # Stage 1 logic remains the same
@@ -401,16 +647,20 @@ class WaveUI:
                 pv_range = range(config['pv_range'][0], config['pv_range'][1] + 1)
                 els_range = range(config['els_range'][0], config['els_range'][1] + 1)
                 pressure_range = range(config['feed_pressure_range'][0], 
-                                    config['feed_pressure_range'][1] + 1)
+                                     config['feed_pressure_range'][1] + 1)
                 element_type = config['element_type']
                 total_combinations = len(pv_range) * len(els_range) * len(pressure_range)
                 logger.info(f"Starting stage 1 parameter sweep with {total_combinations} combinations")
                 
                 for pv, els, pressure in itertools.product(pv_range, els_range, pressure_range):
-                    filename = f"{EXPORT_FILENAME_TEMPLATE.format(stage=1, pv=pv, els=els, pressure=pressure)}.xls"
-                    file_path = os.path.join(self.export_dir, filename)
-                    
-                    if self._process_parameter_combination(pv, els, element_type, pressure, file_path):
+                    cur_params = {
+                        'stage': self.stages,
+                        'pv': pv, 
+                        'els': els,
+                        'element_type': element_type,
+                        'feed_pressure': pressure
+                    }
+                    if self._process_parameter_combination(cur_params):
                         successful_runs += 1
                         
             else:
@@ -446,15 +696,40 @@ class WaveUI:
                 for prev_params in itertools.product(*prev_stage_combinations):
                     # Get feed pressure from previous stage's Excel
                     prev_stage = current_stage - 1
-                    prev_pv, prev_els, _, prev_pressure = prev_params[prev_stage - 1]
+                    prev_pv, prev_els, prev_ele_type, prev_pressure = prev_params[prev_stage - 1]
                     
-                    feed_pressure = self.get_feed_pressure_from_excel(
-                        prev_stage, prev_pv, prev_els, prev_pressure)
+                    # Convert params to the format expected by get_feed_pressure_from_excel
+                    prev_stage_tuples = []
+                    for i, param_tuple in enumerate(prev_params):
+                        stage_num = i + 1
+                        if stage_num < prev_stage:
+                            prev_stage_tuples.append(param_tuple)
                     
+                    if prev_stage > 1:
+                        prev_boost_pressure, feed_pressure = self.get_pressure_from_excel(
+                            prev_stage, prev_pv, prev_els, prev_ele_type, prev_pressure, prev_stage_tuples)
+                    else:
+                        _, feed_pressure = self.get_pressure_from_excel(
+                            prev_stage, prev_pv, prev_els, prev_ele_type, prev_pressure)
+                         
                     if feed_pressure is None:
-                        logger.info(f"Unable to find the previous stage results for the combination pv:{prev_pv} els:{prev_els} feedpressure: {prev_pressure}")
+                        pressure_type = "feed_pressure" if prev_stage == 1 else "boost_pressure"
+                        logger.info(f"Unable to find the previous stage results for the combination pv:{prev_pv} els:{prev_els} {pressure_type}: {prev_pressure}")
                         continue
-                    
+
+                    # If boost pressure was found for stage > 1, update the tuple to include it
+                    if prev_boost_pressure is not None and prev_stage > 1:
+                        # Convert the tuple to list for modification
+                        prev_param_list = list(prev_params[prev_stage - 1])
+                        # Add boost pressure as the 5th element
+                        if len(prev_param_list) == 4:  # Only add if not already there
+                            prev_param_list.append(prev_boost_pressure)
+                        
+                        # Create new tuples list with the updated tuple
+                        new_prev_params = list(prev_params)
+                        new_prev_params[prev_stage - 1] = tuple(prev_param_list)
+                        prev_params = tuple(new_prev_params)
+
                     # Get valid target pressures
                     valid_targets = self.get_valid_target_pressures(target_range, feed_pressure)
                     
@@ -464,23 +739,31 @@ class WaveUI:
                     
                     # Process current stage combinations
                     for target in valid_targets:
-                        boost_pressure = target - feed_pressure
+                        boost_pressure = round((target - feed_pressure), 1)
                         
                         for pv, els in itertools.product(current_pv_range, current_els_range):
                             total_combinations += 1
-                            
-                            filename = f"{EXPORT_FILENAME_TEMPLATE.format(stage=current_stage, pv=pv, els=els, pressure=target)}.xls"
-                            file_path = os.path.join(self.export_dir, filename)
-                            
                             # Log the combination being processed
-                            prev_stages_info = ", ".join(
-                                f"Stage{i+1}(PV={p[0]},ELS={p[1]},Ele_tye={p[2]}, P={p[3]})" 
-                                for i, p in enumerate(prev_params)
-                            )
-                            logger.info(f"Processing: {prev_stages_info}")
+                            prev_stages_info = []
+                            for i, p in enumerate(prev_params):
+                                stage_num = i + 1
+                                pressure_type = "feed_pressure" if stage_num == 1 else "boost_pressure"
+                                prev_stages_info.append(
+                                    f"Stage{stage_num}(PV={p[0]},ELS={p[1]},Ele_type={p[2]},{pressure_type}={p[3]})"
+                                )
+                            logger.info(f"Processing: {', '.join(prev_stages_info)}")
                             logger.info(f"Current Stage{current_stage}: PV={pv}, ELS={els}, Element_Type={cur_element_type}, Target={target}, Boost={boost_pressure}")
                             
-                            if self._process_parameter_combination(pv, els, cur_element_type, boost_pressure, file_path, prev_params):
+                            cur_params = {
+                                'stage': current_stage,
+                                'pv': pv, 
+                                'els': els,
+                                'element_type': cur_element_type,
+                                'boost_pressure': boost_pressure,
+                                'target_pressure': target
+                            }
+
+                            if self._process_parameter_combination(cur_params, prev_params):
                                 successful_runs += 1
                 
         finally:
@@ -489,17 +772,13 @@ class WaveUI:
         logger.info(f"Parameter sweep completed. Successful runs: {successful_runs}/{total_combinations}")
         return successful_runs, total_combinations
 
-    def _process_parameter_combination(self, pv, els, element_type, pressure, file_path, prev_stage_params=None):
+    def _process_parameter_combination(self, cur_stage_params, prev_stage_params=None):
         """
         Process a single parameter combination.
-        
+
         Args:
-            pv (int): PV value for the current stage
-            els (int): ELS value for the current stage
-            element_type (str): Element type of the current stage
-            pressure (float): Pressure value for the current stage (feed pressure for stage 1, boost pressure for stages 2-3)
-            file_path (str): Path to save the Excel report
-            prev_stage_params (list, optional): List of tuples (pv, els, pressure) for each previous stage. Required for stages > 1.
+            cur_stage_params (dict): A dict of current stage parameters
+            prev_stage_params (list, optional): List of tuples (pv, els, element_type, pressure) for each previous stage
             
         Returns:
             bool: True if successful, False otherwise
@@ -509,7 +788,16 @@ class WaveUI:
             logger.error("Failed to select Reverse Osmosis tab")
             return False
         
-        if not self.set_reverse_osmosis_parameters(pv, els, element_type, pressure, prev_stage_params):
+        # Determine which pressure parameter to use based on stage
+        stage = cur_stage_params['stage']
+        pressure_param = cur_stage_params.get('feed_pressure' if stage == 1 else 'boost_pressure')
+        
+        if not self.set_reverse_osmosis_parameters(
+            cur_stage_params['pv'], 
+            cur_stage_params['els'], 
+            cur_stage_params['element_type'], 
+            pressure_param, 
+            prev_stage_params):
             logger.error("Failed to set parameters")
             return False
             
@@ -521,9 +809,13 @@ class WaveUI:
         if not self.open_detailed_report():
             logger.error("Failed to open detailed report")
             return False
-            
+                
+        # Generate filename and add metadata
+        filename = self.add_metadata_entry(cur_stage_params, prev_stage_params)
+        actual_file_path = os.path.abspath(os.path.join(self.export_dir, filename))
+        
         # Export to Excel
-        if not self.export_to_excel(file_path):
+        if not self.export_to_excel(actual_file_path):
             logger.error("Failed to export report")
             return False
             

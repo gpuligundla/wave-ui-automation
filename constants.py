@@ -111,4 +111,3 @@ SAVE_FILE_TIMEOUT = 2
 
 # Export settings
 EXPORT_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "WAVE_Reports")
-EXPORT_FILENAME_TEMPLATE = "WAVE_Report_Stage{stage}_PV{pv}_ELS{els}_Pressure{pressure}"
