@@ -281,6 +281,18 @@ class WaveUI:
         except Exception as e:
             logger.error(f"Failed to set elements per PV on stage {cur_stage}: {e}")
         
+         # Handle Element Type (combo box)
+        try:
+            combo_box = self.main_window.child_window(
+                auto_id=UI_FIELDS["element_type"]["auto_id"][cur_stage-1],
+                control_type="ComboBox",
+                class_name=UI_FIELDS["element_type"]["class_name"],
+            )
+            combo_box.select(ele_type)
+            logger.info(f"Set element type to {ele_type} on stage {cur_stage}")
+        except Exception as e:
+            logger.error(f"Failed to set element type on stage {cur_stage}: {e}")
+
         # Handle Pressure (edit field)
         if cur_stage == 1:
             # Handle the Feed pressure, only for the Stage 1
@@ -311,18 +323,6 @@ class WaveUI:
                 logger.info(f"Set boost pressure to {pressure} on stage {cur_stage}")
             except Exception as e:
                 logger.error(f"Failed to set boost pressure on stage {cur_stage}: {e}")
-
-        # 6. Handle Element Type (combo box)
-        try:
-            combo_box = self.main_window.child_window(
-                auto_id=UI_FIELDS["element_type"]["auto_id"][cur_stage-1],
-                control_type="ComboBox",
-                class_name=UI_FIELDS["element_type"]["class_name"],
-            )
-            combo_box.select(ele_type)
-            logger.info(f"Set element type to {ele_type} on stage {cur_stage}")
-        except Exception as e:
-            logger.error(f"Failed to set element type on stage {cur_stage}: {e}")
 
 
     def open_detailed_report(self):
@@ -405,103 +405,123 @@ class WaveUI:
             bool: True if successful, False otherwise.
         """
         try:
-            # Wait a bit longer for the confirmation dialog to appear
-            time.sleep(2)
+            # Give the dialog more time to appear
+            time.sleep(3)
             
+            # Try to find the confirmation dialog
             try:
-                # Try the win32 backend first
                 confirm_dialog = Desktop(backend="win32").window(title="Confirmation", class_name="#32770")
                 confirm_dialog.wait('exists', DEFAULT_TIMEOUT)
-                logger.info("Found exit confirmation dialog using win32 backend")
+                logger.info("Found exit confirmation dialog")
                 
-                # Try different methods to click the Yes button
+                # Make sure dialog is in focus
+                confirm_dialog.set_focus()
+                time.sleep(1)
+                
+                # Try several approaches to click Yes
                 try:
-                    yes_button = confirm_dialog.child_window(title="Yes", class_name="Button", auto_id="6")
-                    yes_button.click_input()
-                    logger.info("Clicked Yes on exit confirmation dialog using click_input()")
+                    yes_button = confirm_dialog.child_window(title="Yes", class_name="Button")
+                    yes_button.set_focus()
+                    yes_button.click()
+                    logger.info("Clicked Yes on exit confirmation dialog")
                 except Exception as e:
-                    logger.warning(f"Failed to click Yes button with click_input(): {e}")
+                    logger.warning(f"Failed with button click: {e}")
                     try:
-                        # Try another approach
-                        keyboard.send_keys("{LEFT}{ENTER}")
-                        logger.info("Sent keyboard shortcut for Yes button")
+                        # Direct keyboard shortcut for "Yes"
+                        keyboard.send_keys("%y")  # Alt+Y for Yes
+                        logger.info("Sent Alt+Y for Yes button")
+                        time.sleep(1)
                     except Exception as ke:
-                        logger.warning(f"Failed with keyboard shortcut: {ke}")
-                        # One more fallback
-                        try:
-                            keyboard.send_keys("%y")  # Alt+Y for Yes
-                            logger.info("Sent Alt+Y for Yes button")
-                        except:
-                            logger.error("All methods to click Yes button failed")
-                            return False
+                        logger.warning(f"Failed with Alt+Y: {ke}")
+                        # Last resort
+                        keyboard.send_keys("{ENTER}")
+                        logger.info("Pressed Enter as fallback")
             except Exception as e:
-                logger.warning(f"Failed to find confirmation dialog with win32 backend: {e}")
-                # Try the UIA backend as fallback
+                logger.warning(f"Win32 backend failed: {e}")
+                # Try UIA backend
                 try:
                     confirm_dialog = Desktop(backend="uia").window(title="Confirmation")
                     confirm_dialog.wait('exists', DEFAULT_TIMEOUT)
-                    logger.info("Found exit confirmation dialog using UIA backend")
+                    logger.info("Found dialog with UIA backend")
                     
-                    # Try to find and click the Yes button
-                    yes_button = confirm_dialog.Yes
-                    yes_button.click_input()
-                    logger.info("Clicked Yes on exit confirmation dialog using UIA backend")
+                    confirm_dialog.set_focus()
+                    time.sleep(1)
+                    
+                    # Try to click Yes
+                    yes_button = confirm_dialog.child_window(title="Yes")
+                    yes_button.click()
+                    logger.info("Clicked Yes with UIA backend")
                 except Exception as e2:
-                    logger.warning(f"Failed with UIA backend too: {e2}")
-                    # Last resort: just press Enter which usually selects the default button (Yes)
-                    keyboard.send_keys("{ENTER}")
-                    logger.info("Pressed Enter as fallback for confirmation dialog")
+                    logger.warning(f"UIA backend also failed: {e2}")
+                    # Last resort
+                    keyboard.send_keys("%y")  # Alt+Y
+                    time.sleep(1)
+                    keyboard.send_keys("{ENTER}")  # Enter as final fallback
+                    logger.info("Used keyboard fallbacks")
             
-            # Wait for the dialog to be processed
-            time.sleep(2)
-                
-            # Now wait for potential save project dialog
+            # Wait for dialogs to process
+            time.sleep(3)
+            
+            # Check for save dialog
             try:
-                # First check if save dialog exists using win32 backend
-                save_dialog = Desktop(backend="win32").window(title="Save Project", class_name="#32770")
-                save_dialog.wait('exists', DEFAULT_TIMEOUT)
-                logger.info("Found save project dialog")
-                
-                # Try different methods to click the No button
-                try:
-                    no_button = save_dialog.child_window(title="No", class_name="Button", auto_id="7")
-                    no_button.click_input()
-                    logger.info("Clicked No on save project dialog")
-                except Exception as e:
-                    logger.warning(f"Failed to click No button with click_input(): {e}")
+                save_dialog = Desktop(backend="win32").window(title_re="Save.*", class_name="#32770")
+                if save_dialog.exists():
+                    logger.info("Found save dialog")
+                    save_dialog.set_focus()
+                    time.sleep(1)
+                    
                     try:
-                        # Try keyboard navigation (right arrow to No, then Enter)
-                        keyboard.send_keys("{RIGHT}{ENTER}")
-                        logger.info("Sent keyboard shortcut for No button")
-                    except:
-                        # Last resort: Alt+N for No
-                        keyboard.send_keys("%n")
+                        no_button = save_dialog.child_window(title="No", class_name="Button")
+                        no_button.set_focus()
+                        no_button.click()
+                        logger.info("Clicked No on save dialog")
+                    except Exception as e:
+                        logger.warning(f"Failed to click No: {e}")
+                        # Try keyboard shortcuts
+                        keyboard.send_keys("%n")  # Alt+N for No
                         logger.info("Sent Alt+N for No button")
             except Exception as e:
-                # Try UIA backend if win32 fails
+                logger.debug(f"No save dialog or couldn't interact: {e}")
+                # Check with UIA backend as well
                 try:
-                    save_dialog = Desktop(backend="uia").window(title="Save Project")
-                    save_dialog.wait('exists', DEFAULT_TIMEOUT)
-                    logger.info("Found save project dialog using UIA backend")
-                    
-                    no_button = save_dialog.No
-                    no_button.click_input()
-                    logger.info("Clicked No on save project dialog using UIA backend")
+                    save_dialog = Desktop(backend="uia").window(title_re="Save.*")
+                    if save_dialog.exists():
+                        save_dialog.set_focus()
+                        time.sleep(1)
+                        no_button = save_dialog.child_window(title="No")
+                        no_button.click()
+                        logger.info("Clicked No with UIA backend")
                 except Exception as e2:
-                    # It's okay if the save dialog doesn't appear
-                    logger.debug(f"No save project dialog appeared or unable to interact with it: {e2}")
+                    logger.debug(f"Save dialog check with UIA failed: {e2}")
             
-            # Wait for all dialogs to be processed
-            time.sleep(2)
+            # Wait for everything to complete
+            time.sleep(3)
+            
+            # Verify the app is actually closed
+            try:
+                if self.main_window.exists():
+                    logger.warning("Main window still exists, sending forceful Alt+F4")
+                    self.main_window.set_focus()
+                    keyboard.send_keys("%{F4}")
+                    time.sleep(2)
+                    # Try sending escape to close any lingering dialogs
+                    keyboard.send_keys("{ESC}")
+                    time.sleep(1)
+                    keyboard.send_keys("%y")  # Alt+Y for potential confirmation
+            except Exception as e:
+                logger.info(f"Main window verification error: {e}, assuming closed successfully")
+            
             return True
                 
         except Exception as e:
             logger.error(f"Error handling exit confirmation: {e}")
-            # Final fallback - try sending keyboard shortcuts
+            # Emergency fallback - try brute force closing
             try:
-                keyboard.send_keys("{ENTER}")  # For confirmation dialog
+                keyboard.send_keys("%{F4}")  # Alt+F4
                 time.sleep(1)
-                keyboard.send_keys("{RIGHT}{ENTER}")  # For save dialog (No)
+                keyboard.send_keys("%y")  # Alt+Y for Yes
+                time.sleep(1)
+                keyboard.send_keys("%n")  # Alt+N for No (save dialog)
                 return True
             except:
                 return False

@@ -124,13 +124,13 @@ def handle_save_dialog(file_path):
                 filename_field.set_focus()
                 keyboard.send_keys("^a")  # Select all
                 keyboard.send_keys("{DEL}")  # Delete existing text
-                keyboard.send_keys(file_path)
+                keyboard.send_keys(file_path, with_spaces=True)
                 logger.info(f"Entered file path: {file_path}")
             else:
                 logger.warning("Filename field not found by specified values, using keyboard fallback")
                 save_dialog.set_focus()
                 keyboard.send_keys("^a{DEL}")  # Select all and delete in one command
-                keyboard.send_keys(file_path)
+                keyboard.send_keys(file_path, with_spaces=True)
                 logger.info(f"Entered file path using keyboard fallback: {file_path}")
         except Exception as e:
             logger.error(f"Error entering file path: {e}")
