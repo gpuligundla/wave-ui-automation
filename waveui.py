@@ -399,29 +399,112 @@ class WaveUI:
     
     def _handle_exit_confirmation(self):
         """
-        Handles the exit confirmation dialog.
+        Handles the exit confirmation dialog and potential save project dialog.
         
         Returns:
             bool: True if successful, False otherwise.
         """
         try:
-            # Wait for the confirmation dialog
-            confirm_dialog = Desktop(backend="win32").window(class_name=SAVE_DIALOG_CLASS, title=EXIT_DIALOG_TITLE)
-            confirm_dialog.wait('exists', DEFAULT_TIMEOUT)
+            # Wait a bit longer for the confirmation dialog to appear
+            time.sleep(2)
             
-            # Find the Yes button using the exact automation ID and class name
-            yes_button = confirm_dialog.child_window(title="Yes", class_name="Button", auto_id="6")
+            try:
+                # Try the win32 backend first
+                confirm_dialog = Desktop(backend="win32").window(title="Confirmation", class_name="#32770")
+                confirm_dialog.wait('exists', DEFAULT_TIMEOUT)
+                logger.info("Found exit confirmation dialog using win32 backend")
+                
+                # Try different methods to click the Yes button
+                try:
+                    yes_button = confirm_dialog.child_window(title="Yes", class_name="Button", auto_id="6")
+                    yes_button.click_input()
+                    logger.info("Clicked Yes on exit confirmation dialog using click_input()")
+                except Exception as e:
+                    logger.warning(f"Failed to click Yes button with click_input(): {e}")
+                    try:
+                        # Try another approach
+                        keyboard.send_keys("{LEFT}{ENTER}")
+                        logger.info("Sent keyboard shortcut for Yes button")
+                    except Exception as ke:
+                        logger.warning(f"Failed with keyboard shortcut: {ke}")
+                        # One more fallback
+                        try:
+                            keyboard.send_keys("%y")  # Alt+Y for Yes
+                            logger.info("Sent Alt+Y for Yes button")
+                        except:
+                            logger.error("All methods to click Yes button failed")
+                            return False
+            except Exception as e:
+                logger.warning(f"Failed to find confirmation dialog with win32 backend: {e}")
+                # Try the UIA backend as fallback
+                try:
+                    confirm_dialog = Desktop(backend="uia").window(title="Confirmation")
+                    confirm_dialog.wait('exists', DEFAULT_TIMEOUT)
+                    logger.info("Found exit confirmation dialog using UIA backend")
+                    
+                    # Try to find and click the Yes button
+                    yes_button = confirm_dialog.Yes
+                    yes_button.click_input()
+                    logger.info("Clicked Yes on exit confirmation dialog using UIA backend")
+                except Exception as e2:
+                    logger.warning(f"Failed with UIA backend too: {e2}")
+                    # Last resort: just press Enter which usually selects the default button (Yes)
+                    keyboard.send_keys("{ENTER}")
+                    logger.info("Pressed Enter as fallback for confirmation dialog")
             
-            if yes_button:
-                yes_button.click_input()
-                logger.info("Confirmed application exit")
-                return True
-            else:
-                logger.error("Could not find Yes button in exit confirmation dialog")
-                return False
+            # Wait for the dialog to be processed
+            time.sleep(2)
+                
+            # Now wait for potential save project dialog
+            try:
+                # First check if save dialog exists using win32 backend
+                save_dialog = Desktop(backend="win32").window(title="Save Project", class_name="#32770")
+                save_dialog.wait('exists', DEFAULT_TIMEOUT)
+                logger.info("Found save project dialog")
+                
+                # Try different methods to click the No button
+                try:
+                    no_button = save_dialog.child_window(title="No", class_name="Button", auto_id="7")
+                    no_button.click_input()
+                    logger.info("Clicked No on save project dialog")
+                except Exception as e:
+                    logger.warning(f"Failed to click No button with click_input(): {e}")
+                    try:
+                        # Try keyboard navigation (right arrow to No, then Enter)
+                        keyboard.send_keys("{RIGHT}{ENTER}")
+                        logger.info("Sent keyboard shortcut for No button")
+                    except:
+                        # Last resort: Alt+N for No
+                        keyboard.send_keys("%n")
+                        logger.info("Sent Alt+N for No button")
+            except Exception as e:
+                # Try UIA backend if win32 fails
+                try:
+                    save_dialog = Desktop(backend="uia").window(title="Save Project")
+                    save_dialog.wait('exists', DEFAULT_TIMEOUT)
+                    logger.info("Found save project dialog using UIA backend")
+                    
+                    no_button = save_dialog.No
+                    no_button.click_input()
+                    logger.info("Clicked No on save project dialog using UIA backend")
+                except Exception as e2:
+                    # It's okay if the save dialog doesn't appear
+                    logger.debug(f"No save project dialog appeared or unable to interact with it: {e2}")
+            
+            # Wait for all dialogs to be processed
+            time.sleep(2)
+            return True
+                
         except Exception as e:
             logger.error(f"Error handling exit confirmation: {e}")
-            return False
+            # Final fallback - try sending keyboard shortcuts
+            try:
+                keyboard.send_keys("{ENTER}")  # For confirmation dialog
+                time.sleep(1)
+                keyboard.send_keys("{RIGHT}{ENTER}")  # For save dialog (No)
+                return True
+            except:
+                return False
 
     def get_pressure_from_excel(self, stage, pv, els, element_type, pressure, prev_stage_params=None):
         """
@@ -606,19 +689,19 @@ class WaveUI:
             logger.error(traceback.format_exc())
             return None, None
 
-    def get_valid_target_pressures(self, target_range, feed_pressure):
+    def get_valid_target_pressures(self, target_values, feed_pressure):
         """
         Get valid target pressures based on feed pressure.
         
         Args:
-            target_range (range): Range of target pressures to check
+            target_values (list): List of target pressures to check
             feed_pressure (float): Feed pressure to compare against
             
         Returns:
             list: List of valid target pressures
         """
         valid_pressures = []
-        for target in target_range:
+        for target in target_values:
             boost = target - feed_pressure
             if boost > 0:
                 valid_pressures.append(target)
@@ -634,25 +717,39 @@ class WaveUI:
         Returns:
             tuple: (successful_runs, total_combinations)
         """
-        if not self.launch_wave():
-            logger.error("Failed to launch WAVE. Aborting parameter sweep.")
-            return 0, 0
-            
         successful_runs = 0
         total_combinations = 0
+        restart_counter = 0
+        # Number of successful runs before restarting the application
+        restart_threshold = 50
+        
         try:
             if self.stages == 1:
-                # Stage 1 logic remains the same
+                # Stage 1 logic with step size
                 config = stage_configs[0]
                 pv_range = range(config['pv_range'][0], config['pv_range'][1] + 1)
                 els_range = range(config['els_range'][0], config['els_range'][1] + 1)
-                pressure_range = range(config['feed_pressure_range'][0], 
-                                     config['feed_pressure_range'][1] + 1)
-                element_type = config['element_type']
-                total_combinations = len(pv_range) * len(els_range) * len(pressure_range)
-                logger.info(f"Starting stage 1 parameter sweep with {total_combinations} combinations")
                 
-                for pv, els, pressure in itertools.product(pv_range, els_range, pressure_range):
+                # Get pressure range with step size
+                pressure_start = config['feed_pressure_range'][0]
+                pressure_end = config['feed_pressure_range'][1]
+                pressure_step = config.get('feed_pressure_step', 1)  # Default to 1 if not specified
+                
+                # Generate pressure values using step size
+                pressure_values = [round(pressure_start + i * pressure_step, 1) 
+                                   for i in range(int((pressure_end - pressure_start) / pressure_step) + 1)]
+                
+                element_type = config['element_type']
+                total_combinations = len(pv_range) * len(els_range) * len(pressure_values)
+                logger.info(f"Starting stage 1 parameter sweep with {total_combinations} combinations")
+                logger.info(f"Pressure values: {pressure_values}")
+                
+                # Launch WAVE initially
+                if not self.launch_wave():
+                    logger.error("Failed to launch WAVE. Aborting parameter sweep.")
+                    return 0, 0
+                    
+                for pv, els, pressure in itertools.product(pv_range, els_range, pressure_values):
                     cur_params = {
                         'stage': self.stages,
                         'pv': pv, 
@@ -660,8 +757,20 @@ class WaveUI:
                         'element_type': element_type,
                         'feed_pressure': pressure
                     }
+                    
+                    # Check if we need to restart the application
+                    if restart_counter >= restart_threshold:
+                        logger.info(f"Restarting WAVE application after {restart_counter} successful runs")
+                        self.close_application()
+                        time.sleep(5)  # Give the application time to close completely
+                        if not self.launch_wave():
+                            logger.error("Failed to restart WAVE. Aborting remaining parameter sweep.")
+                            break
+                        restart_counter = 0
+                    
                     if self._process_parameter_combination(cur_params):
                         successful_runs += 1
+                        restart_counter += 1
                         
             else:
                 # Multi-stage logic (Stage 2 or 3)
@@ -671,9 +780,18 @@ class WaveUI:
                 # Get ranges for the current stage
                 current_pv_range = range(current_config['pv_range'][0], current_config['pv_range'][1] + 1)
                 current_els_range = range(current_config['els_range'][0], current_config['els_range'][1] + 1)
-                target_range = range(current_config['target_pressure_range'][0], 
-                                   current_config['target_pressure_range'][1] + 1)
+                
+                # Get target pressure range with step size
+                target_start = current_config['target_pressure_range'][0]
+                target_end = current_config['target_pressure_range'][1]
+                target_step = current_config.get('target_pressure_step', 1)  # Default to 1 if not specified
+                
+                # Generate target pressure values using step size
+                target_values = [round(target_start + i * target_step, 1) 
+                                 for i in range(int((target_end - target_start) / target_step) + 1)]
+                
                 cur_element_type = current_config['element_type']
+                
                 # Generate all combinations of previous stage parameters
                 prev_stage_combinations = []
                 for stage in range(1, current_stage):
@@ -683,15 +801,30 @@ class WaveUI:
                     element_type = config['element_type']
                     
                     if stage == 1:
-                        pressure_range = range(config['feed_pressure_range'][0], 
-                                            config['feed_pressure_range'][1] + 1)
+                        # Use feed pressure step size for stage 1
+                        pressure_start = config['feed_pressure_range'][0]
+                        pressure_end = config['feed_pressure_range'][1]
+                        pressure_step = config.get('feed_pressure_step', 1)
+                        
+                        pressure_values = [round(pressure_start + i * pressure_step, 1) 
+                                          for i in range(int((pressure_end - pressure_start) / pressure_step) + 1)]
                     else:
-                        pressure_range = range(config['target_pressure_range'][0], 
-                                            config['target_pressure_range'][1] + 1)
+                        # Use target pressure step size for stages > 1
+                        pressure_start = config['target_pressure_range'][0]
+                        pressure_end = config['target_pressure_range'][1]
+                        pressure_step = config.get('target_pressure_step', 1)
+                        
+                        pressure_values = [round(pressure_start + i * pressure_step, 1) 
+                                          for i in range(int((pressure_end - pressure_start) / pressure_step) + 1)]
                     
-                    stage_params = list(itertools.product(pv_range, els_range, (element_type,), pressure_range))
+                    stage_params = list(itertools.product(pv_range, els_range, (element_type,), pressure_values))
                     prev_stage_combinations.append(stage_params)
                 
+                # Launch WAVE initially
+                if not self.launch_wave():
+                    logger.error("Failed to launch WAVE. Aborting parameter sweep.")
+                    return 0, 0
+                    
                 # Process all combinations
                 for prev_params in itertools.product(*prev_stage_combinations):
                     # Get feed pressure from previous stage's Excel
@@ -709,7 +842,7 @@ class WaveUI:
                         prev_boost_pressure, feed_pressure = self.get_pressure_from_excel(
                             prev_stage, prev_pv, prev_els, prev_ele_type, prev_pressure, prev_stage_tuples)
                     else:
-                        _, feed_pressure = self.get_pressure_from_excel(
+                        prev_boost_pressure, feed_pressure = self.get_pressure_from_excel(
                             prev_stage, prev_pv, prev_els, prev_ele_type, prev_pressure)
                          
                     if feed_pressure is None:
@@ -731,7 +864,7 @@ class WaveUI:
                         prev_params = tuple(new_prev_params)
 
                     # Get valid target pressures
-                    valid_targets = self.get_valid_target_pressures(target_range, feed_pressure)
+                    valid_targets = self.get_valid_target_pressures(target_values, feed_pressure)
                     
                     if not valid_targets:
                         logger.info(f"No valid target pressures for prev_stage params: {prev_params}")
@@ -743,6 +876,17 @@ class WaveUI:
                         
                         for pv, els in itertools.product(current_pv_range, current_els_range):
                             total_combinations += 1
+                            
+                            # Check if we need to restart the application
+                            if restart_counter >= restart_threshold:
+                                logger.info(f"Restarting WAVE application after {restart_counter} successful runs")
+                                self.close_application()
+                                time.sleep(5)  # Give the application time to close completely
+                                if not self.launch_wave():
+                                    logger.error("Failed to restart WAVE. Aborting remaining parameter sweep.")
+                                    return successful_runs, total_combinations
+                                restart_counter = 0
+                            
                             # Log the combination being processed
                             prev_stages_info = []
                             for i, p in enumerate(prev_params):
@@ -765,8 +909,10 @@ class WaveUI:
 
                             if self._process_parameter_combination(cur_params, prev_params):
                                 successful_runs += 1
-                
+                                restart_counter += 1
+            
         finally:
+            # Make sure to close the application before exiting
             self.close_application()
             
         logger.info(f"Parameter sweep completed. Successful runs: {successful_runs}/{total_combinations}")
