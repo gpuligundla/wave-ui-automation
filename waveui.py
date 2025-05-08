@@ -741,7 +741,7 @@ class WaveUI:
         total_combinations = 0
         restart_counter = 0
         # Number of successful runs before restarting the application
-        restart_threshold = 50
+        restart_threshold = 30
         
         try:
             if self.stages == 1:
