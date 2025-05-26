@@ -398,7 +398,7 @@ class WaveUI:
 
         try:
             # Give dialog time to appear
-            time.sleep(2)
+            time.sleep(5)
 
             # Maximum retries and timeout
             max_retries = 3
@@ -1209,17 +1209,26 @@ class WaveUI:
         Returns:
             bool: True if successful, False otherwise
         """
-        # Switch to Reverse Osmosis tab and set parameters
-        if not self.select_tab(TAB_REVERSE_OSMOSIS):
-            logger.error("Failed to select Reverse Osmosis tab")
-            return False
-
+        
         # Determine which pressure parameter to use based on stage
         stage = cur_stage_params["stage"]
         pressure_param = cur_stage_params.get(
             "feed_pressure" if stage == 1 else "boost_pressure"
         )
-
+        
+        if cur_stage_params['element_type'] == "NF200-4040" and not (hasattr(self, "_boron_dialog_handled") and self._boron_dialog_handled):
+            dialog_thread = threading.Thread(
+                target=self._handle_boron_notification_dialog,
+                daemon=True
+            )
+            dialog_thread.start()
+            dialog_thread.join(timeout=5) 
+        
+        # Switch to Reverse Osmosis tab and set parameters
+        if not self.select_tab(TAB_REVERSE_OSMOSIS):
+            logger.error("Failed to select Reverse Osmosis tab")
+            return False
+        
         if not self.set_reverse_osmosis_parameters(
             cur_stage_params["pv"],
             cur_stage_params["els"],
