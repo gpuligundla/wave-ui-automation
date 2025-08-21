@@ -6,7 +6,7 @@ import os
 import json
 import sys
 from datetime import datetime
-from waveui import WaveUI
+from src.waveui import WaveUI
 from utils import load_json_config
 
 logger = logging.getLogger(__name__)
