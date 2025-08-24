@@ -6,7 +6,7 @@ import os
 import json
 import sys
 from datetime import datetime
-from src.waveui import WaveUI
+from waveui import WaveUI
 from utils import load_json_config
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def setup_logging():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None):
+def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None, add_conc_recycle=False):
     """Run the automation using a JSON configuration file for a specific stage."""
     try:
         # Load and validate the configuration
@@ -53,7 +53,8 @@ def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None):
         export_dir = common['export_dir']
         # Get configurations for current and previous stages
         stage_configs = config['stages'][:stage_to_run]
-        
+        conc_recycle_flow = config['optional']['conc_recycle_flow'] if add_conc_recycle else []
+
         # Create WaveUI instance
         wave_ui = WaveUI(
             file_name=wave_exe,
@@ -63,6 +64,7 @@ def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None):
             feed_flow_rate=feed_flow_rate,
             stages=stage_to_run,
             prev_stage_excel_file=prev_stage_excel,
+            conc_recycle_flow = conc_recycle_flow,
             export_dir=export_dir
         )
         
@@ -85,31 +87,38 @@ def main():
         
         # Parse command line arguments
         if len(sys.argv) < 3:
-            print("Usage: python main.py <config_file> <stage_number> [prev_stage_excel]")
-            print("Example: python main.py config.json 1")
+            print("Usage: python main.py <config_file> <stage_number> [prev_stage_excel] [--conc-recycle]")
+            print("Example: python main.py config.json 1 --conc-recycle")
             print("Example: python main.py config.json 2 reports/stage1_results.xls")
             sys.exit(1)
-            
+
         config_file = sys.argv[1]
         if not os.path.exists(config_file):
             print(f"Error: Configuration file '{config_file}' not found")
             sys.exit(1)
-            
+
         try:
             stage_to_run = int(sys.argv[2])
         except ValueError:
             print("Error: Stage number must be an integer")
             sys.exit(1)
-            
+
         prev_stage_excel = None
-        if len(sys.argv) > 3:
-            prev_stage_excel = sys.argv[3]
-            if not os.path.exists(prev_stage_excel):
-                print(f"Error: Previous stage Excel file '{prev_stage_excel}' not found")
-                sys.exit(1)
-        
+        add_conc_recycle = False
+
+        # Parse optional arguments
+        args = sys.argv[3:]
+        for arg in args:
+            if arg == "--conc-recycle":
+                add_conc_recycle = True
+            elif prev_stage_excel is None:
+                prev_stage_excel = arg
+                if not os.path.exists(prev_stage_excel):
+                    print(f"Error: Previous stage Excel file '{prev_stage_excel}' not found")
+                    sys.exit(1)
+
         # Run the automation
-        run_wave_automation(config_file, stage_to_run, prev_stage_excel)
+        run_wave_automation(config_file, stage_to_run, prev_stage_excel, add_conc_recycle)
         
         logger.info(f"Automation completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         

@@ -23,12 +23,11 @@ from constants import (
     BUTTON_EXPORT,
     TOOLBAR_ID,
     EXPORT_DIR,
-    EXIT_DIALOG_TITLE,
     APPLICATION_LOAD_TIMEOUT,
     TAB_SWITCH_TIMEOUT,
     DEFAULT_TIMEOUT,
     WINDOW_VISIBLE_TIMEOUT,
-    SAVE_DIALOG_CLASS,
+    CR_FLOW_WINDOW
 )
 from utils import check_and_create_results_directory, handle_save_dialog
 
@@ -49,6 +48,7 @@ class WaveUI:
         feed_flow_rate=2.1,
         stages=1,
         prev_stage_excel_file=None,
+        conc_recycle_flow = [],
         export_dir=EXPORT_DIR,
     ):
         """
@@ -62,6 +62,7 @@ class WaveUI:
             feed_flow_rate (float): Feed flow rate value
             stages (int): Number of stages
             prev_stage_excel_file (str): Path to the previous stage excel file (used only when stages > 1)
+            conc_recycle_flow (list): List of conc values(optional)
         """
         self.file_name = file_name
         self.project_path = project_path
@@ -70,6 +71,7 @@ class WaveUI:
         self.feed_flow_rate = feed_flow_rate
         self.stages = stages
         self.prev_stage_excel_file = prev_stage_excel_file
+        self.conc_recycle_flow = conc_recycle_flow
 
         self.app = None
         self.main_window = None
@@ -231,7 +233,7 @@ class WaveUI:
             return False
 
     def set_reverse_osmosis_parameters(
-        self, pv_per_stage, els_per_pv, element_type, pressure, prev_stage_params
+        self, pv_per_stage, els_per_pv, element_type, cr_flow, pressure, prev_stage_params
     ):
         """
         Sets parameters in the Reverse Osmosis tab.
@@ -270,7 +272,7 @@ class WaveUI:
             # Handle the fields of stages
             if self.stages == 1:
                 self._set_stage_reverse_osmosis_parameters(
-                    self.stages, pv_per_stage, els_per_pv, element_type, pressure
+                    self.stages, pv_per_stage, els_per_pv, element_type, cr_flow, pressure
                 )
             else:
                 logger.info(
@@ -285,7 +287,7 @@ class WaveUI:
                         pv, els, ele_type, pressure, boost_pressure = values
                         pressure = boost_pressure
                     self._set_stage_reverse_osmosis_parameters(
-                        cur_stage, pv, els, ele_type, pressure
+                        cur_stage, pv, els, ele_type, cr_flow, pressure
                     )
             return True
         except Exception as e:
@@ -293,7 +295,7 @@ class WaveUI:
             return False
 
     def _set_stage_reverse_osmosis_parameters(
-        self, cur_stage, pv_per_stage, els_per_pv, ele_type, pressure
+        self, cur_stage, pv_per_stage, els_per_pv, ele_type, cr_flow, pressure
     ):
 
         # Handle PV per stage (edit field)
@@ -383,6 +385,42 @@ class WaveUI:
                 logger.info(f"Set boost pressure to {pressure} on stage {cur_stage}")
             except Exception as e:
                 logger.error(f"Failed to set boost pressure on stage {cur_stage}: {e}")
+        
+        # Handle the conc_recycle_flow, if set
+        if self.conc_recycle_flow:
+            try:
+                # hit to open new window and wait til it is visible
+                cr_flow_group = self.main_window.child_window(
+                    title=UI_FIELDS["cr_flow_edit"]["group_name"],
+                    control_type="Group",
+                    class_name=UI_FIELDS["cr_flow_edit"]["group_class_name"],
+                )
+                # Find all Edit boxes (TextBox) inside cr_flow_group and click the first one
+                edit_boxes = cr_flow_group.children(control_type="Edit")
+                if edit_boxes:
+                    edit_boxes[0].click_input()
+                else:
+                    logger.error("No Edit boxes found in cr_flow_group")
+                # wait for the window
+                cr_flow_window = self.main_window.child_window(title=CR_FLOW_WINDOW, control_type="Window")
+                cr_flow_window.wait("visible", timeout=WINDOW_VISIBLE_TIMEOUT)
+                # select the textbox
+                cr_flow_edit = cr_flow_window.child_window(
+                    auto_id=UI_FIELDS["cr_flow"]["auto_id"],
+                    control_type="Edit",
+                    class_name=UI_FIELDS["cr_flow"]["class_name"],
+                )
+                # enter the conc recycle flow value
+                cr_flow_edit.set_text(str(cr_flow))
+                cr_flow_ok = cr_flow_window.child_window(
+                    control_type="Button",
+                    title="OK",
+                    class_name="Button"
+                    )
+                cr_flow_ok.click_input()
+                logger.info(f"Set Conc Recylcle flow {cr_flow}")
+            except Exception as e:
+                logger.error(f"Falied to set the conc recycle flow: {cr_flow}%")
 
     def _handle_boron_notification_dialog(self):
         """
@@ -921,7 +959,10 @@ class WaveUI:
         restart_counter = 0
         # Number of successful runs before restarting the application
         restart_threshold = 30
-
+        # Get Conc Recycle flow values, if set
+        conc_recycle_flow = [None]
+        if self.conc_recycle_flow:
+            conc_recycle_flow = self.conc_recycle_flow
         try:
             if self.stages == 1:
                 # Stage 1 logic with step size
@@ -946,7 +987,7 @@ class WaveUI:
 
                 element_type = config["element_type"]
                 total_combinations = (
-                    len(pv_range) * len(els_range) * len(pressure_values)
+                    len(pv_range) * len(els_range) * len(pressure_values) * len(conc_recycle_flow)
                 )
                 logger.info(
                     f"Starting stage 1 parameter sweep with {total_combinations} combinations"
@@ -957,9 +998,9 @@ class WaveUI:
                 if not self.launch_wave():
                     logger.error("Failed to launch WAVE. Aborting parameter sweep.")
                     return 0, 0
-
-                for pv, els, pressure in itertools.product(
-                    pv_range, els_range, pressure_values
+                
+                for pv, els, pressure, cr_flow in itertools.product(
+                    pv_range, els_range, pressure_values, conc_recycle_flow
                 ):
                     cur_params = {
                         "stage": self.stages,
@@ -967,6 +1008,7 @@ class WaveUI:
                         "els": els,
                         "element_type": element_type,
                         "feed_pressure": pressure,
+                        "cr_flow": cr_flow
                     }
 
                     # Check if we need to restart the application
@@ -1133,7 +1175,7 @@ class WaveUI:
                         continue
 
                     # Process current stage combinations
-                    for target in valid_targets:
+                    for target, cr_flow in itertools.product(valid_targets, conc_recycle_flow):
                         boost_pressure = round((target - feed_pressure), 1)
 
                         for pv, els in itertools.product(
@@ -1181,6 +1223,7 @@ class WaveUI:
                                 "element_type": cur_element_type,
                                 "boost_pressure": boost_pressure,
                                 "target_pressure": target,
+                                "cr_flow": cr_flow
                             }
 
                             if self._process_parameter_combination(
@@ -1233,6 +1276,7 @@ class WaveUI:
             cur_stage_params["pv"],
             cur_stage_params["els"],
             cur_stage_params["element_type"],
+            cur_stage_params["cr_flow"],
             pressure_param,
             prev_stage_params,
         ):

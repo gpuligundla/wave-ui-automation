@@ -3,7 +3,7 @@ import os
 
 # Window titles and patterns
 WINDOW_TITLE_PATTERN = "{project_name} - {case_name}"
-
+CR_FLOW_WINDOW = "Reverse Osmosis Flow Calculator"
 # Tab names
 TAB_REVERSE_OSMOSIS = "Reverse Osmosis"
 TAB_SUMMARY_REPORT = "Summary Report"
@@ -59,8 +59,22 @@ UI_FIELDS = {
         "type": "button",
         "class_name": "Button",
         "auto_id": "1"
+    },
+    "cr_flow_edit": {
+        "type": "edit",
+        "class_name": "TextBox",
+        "group_name": "Flows",
+        "group_class_name": "GroupBox"
+    },
+    "cr_flow": {
+        "type": "edit",
+        "class_name": "TextBox",
+        "group_name": "Pass 1",
+        "group_class_name": "GroupBox",
+        "auto_id": "txtConcRecyclePercent"
     }
 }
+
 
 # Button and control names
 BUTTON_DETAILED_REPORT = "Detailed Report"
