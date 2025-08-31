@@ -61,6 +61,7 @@ def run_wave_automation(config_file, stage_to_run, prev_stage_excel=None, add_co
             project_path=project_path,
             project_name=project_name,
             case_name=case_name,
+            config=config,
             feed_flow_rate=feed_flow_rate,
             stages=stage_to_run,
             prev_stage_excel_file=prev_stage_excel,

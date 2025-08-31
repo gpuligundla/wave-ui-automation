@@ -4,6 +4,7 @@ import os
 # Window titles and patterns
 WINDOW_TITLE_PATTERN = "{project_name} - {case_name}"
 CR_FLOW_WINDOW = "Reverse Osmosis Flow Calculator"
+ISD_WINDOW = "Element Configuration - Internally Staged Design"
 # Tab names
 TAB_REVERSE_OSMOSIS = "Reverse Osmosis"
 TAB_SUMMARY_REPORT = "Summary Report"
@@ -72,6 +73,19 @@ UI_FIELDS = {
         "group_name": "Pass 1",
         "group_class_name": "GroupBox",
         "auto_id": "txtConcRecyclePercent"
+    },
+    "isd_edit": {
+        "name": "Edit ISD",
+        "type": "link",
+        "class_name": "Hyperlink",
+    },
+    "isd_ele_type":{
+        "type": "combo",
+        "auto_id": [
+            "cboProductName", "cboProductElement2", "cboProductElement3", 
+            "cboProductElement4", "cboProductElement5", "cboProductElement6", 
+            "cboProductElement7", "cboProductElement8"], 
+        "class_name": "ComboBox"
     }
 }
 

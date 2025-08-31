@@ -3,7 +3,7 @@ This class is responsible for WAVE UI automation actions
 """
 
 from pywinauto import Application, Desktop, keyboard
-from pywinauto.timings import wait_until_passes
+from pywinauto.timings import wait_until_passes, TimeoutError
 import os
 import threading
 import time
@@ -27,7 +27,8 @@ from constants import (
     TAB_SWITCH_TIMEOUT,
     DEFAULT_TIMEOUT,
     WINDOW_VISIBLE_TIMEOUT,
-    CR_FLOW_WINDOW
+    CR_FLOW_WINDOW,
+    ISD_WINDOW,
 )
 from utils import check_and_create_results_directory, handle_save_dialog
 
@@ -45,10 +46,11 @@ class WaveUI:
         project_path,
         project_name,
         case_name,
+        config,
         feed_flow_rate=2.1,
         stages=1,
         prev_stage_excel_file=None,
-        conc_recycle_flow = [],
+        conc_recycle_flow=[],
         export_dir=EXPORT_DIR,
     ):
         """
@@ -68,6 +70,7 @@ class WaveUI:
         self.project_path = project_path
         self.project_name = project_name
         self.case_name = case_name
+        self.config = config  # passing everything for future purpose.
         self.feed_flow_rate = feed_flow_rate
         self.stages = stages
         self.prev_stage_excel_file = prev_stage_excel_file
@@ -233,7 +236,13 @@ class WaveUI:
             return False
 
     def set_reverse_osmosis_parameters(
-        self, pv_per_stage, els_per_pv, element_type, cr_flow, pressure, prev_stage_params
+        self,
+        pv_per_stage,
+        els_per_pv,
+        element_type,
+        cr_flow,
+        pressure,
+        prev_stage_params,
     ):
         """
         Sets parameters in the Reverse Osmosis tab.
@@ -272,7 +281,12 @@ class WaveUI:
             # Handle the fields of stages
             if self.stages == 1:
                 self._set_stage_reverse_osmosis_parameters(
-                    self.stages, pv_per_stage, els_per_pv, element_type, cr_flow, pressure
+                    self.stages,
+                    pv_per_stage,
+                    els_per_pv,
+                    element_type,
+                    cr_flow,
+                    pressure,
                 )
             else:
                 logger.info(
@@ -331,27 +345,30 @@ class WaveUI:
                 control_type="ComboBox",
                 class_name=UI_FIELDS["element_type"]["class_name"],
             )
+            if ele_type.startswith("ISD"):
+                self._handle_ISD_element_type(combo_box, ele_type)
+            else:
+                # Only start background thread if dialog hasn't been handled yet
+                if ele_type == "NF200-4040" and not (
+                    hasattr(self, "_boron_dialog_handled")
+                    and self._boron_dialog_handled
+                ):
+                    dialog_thread = threading.Thread(
+                        target=self._handle_boron_notification_dialog, daemon=True
+                    )
+                    dialog_thread.start()
 
-            # Only start background thread if dialog hasn't been handled yet
-            if ele_type == "NF200-4040" and not (
-                hasattr(self, "_boron_dialog_handled") and self._boron_dialog_handled
-            ):
-                dialog_thread = threading.Thread(
-                    target=self._handle_boron_notification_dialog, daemon=True
-                )
-                dialog_thread.start()
+                combo_box.select(ele_type)
+                logger.info(f"Set element type to {ele_type} on stage {cur_stage}")
 
-            combo_box.select(ele_type)
-            logger.info(f"Set element type to {ele_type} on stage {cur_stage}")
-
-            # Only wait for thread if we created one
-            if ele_type == "NF200-4040" and not (
-                hasattr(self, "_boron_dialog_handled") and self._boron_dialog_handled
-            ):
-                dialog_thread.join(
-                    timeout=5
-                )  # Wait up to 5 seconds for dialog handling
-
+                # Only wait for thread if we created one
+                if ele_type == "NF200-4040" and not (
+                    hasattr(self, "_boron_dialog_handled")
+                    and self._boron_dialog_handled
+                ):
+                    dialog_thread.join(
+                        timeout=5
+                    )  # Wait up to 5 seconds for dialog handling
         except Exception as e:
             logger.error(f"Failed to set element type on stage {cur_stage}: {e}")
 
@@ -385,7 +402,7 @@ class WaveUI:
                 logger.info(f"Set boost pressure to {pressure} on stage {cur_stage}")
             except Exception as e:
                 logger.error(f"Failed to set boost pressure on stage {cur_stage}: {e}")
-        
+
         # Handle the conc_recycle_flow, if set
         if self.conc_recycle_flow:
             try:
@@ -402,7 +419,9 @@ class WaveUI:
                 else:
                     logger.error("No Edit boxes found in cr_flow_group")
                 # wait for the window
-                cr_flow_window = self.main_window.child_window(title=CR_FLOW_WINDOW, control_type="Window")
+                cr_flow_window = self.main_window.child_window(
+                    title=CR_FLOW_WINDOW, control_type="Window"
+                )
                 cr_flow_window.wait("visible", timeout=WINDOW_VISIBLE_TIMEOUT)
                 # select the textbox
                 cr_flow_edit = cr_flow_window.child_window(
@@ -413,14 +432,77 @@ class WaveUI:
                 # enter the conc recycle flow value
                 cr_flow_edit.set_text(str(cr_flow))
                 cr_flow_ok = cr_flow_window.child_window(
-                    control_type="Button",
-                    title="OK",
-                    class_name="Button"
-                    )
+                    control_type="Button", title="OK", class_name="Button"
+                )
                 cr_flow_ok.click_input()
                 logger.info(f"Set Conc Recylcle flow {cr_flow}")
             except Exception as e:
                 logger.error(f"Falied to set the conc recycle flow: {cr_flow}%")
+
+    def _handle_ISD_element_type(self, combo_box, ele_type):
+        """
+        This function handles the special element type ISD where we need to
+        select every element of the els per pv. It is defined in the config
+        file which we pass to the program. It only works for stage 1
+        """
+        combo_box.type_keys("isd{ENTER}")
+        # wait for the ISD window, on first time it popup's immediately
+        # from second time, we need to select edit ISD
+        isd_window = None
+        try:
+            isd_window = self.main_window.child_window(
+                title=ISD_WINDOW, control_type="Window"
+            )
+            isd_window.wait("visible", timeout=WINDOW_VISIBLE_TIMEOUT)
+        except TimeoutError:
+            logger.warning(
+                "Unable to find the ISD Window, manually selecting the edit button"
+            )
+            isd_edit = self.main_window.child_window(
+                title=UI_FIELDS["isd_edit"]["name"],
+                control_type="Hyperlink",
+                class_name=UI_FIELDS["isd_edit"]["class_name"],
+            )
+            isd_edit.click_input()
+            isd_window = self.main_window.child_window(
+                title=ISD_WINDOW, control_type="Window"
+            )
+            isd_window.wait("visible", timeout=WINDOW_VISIBLE_TIMEOUT)
+        except Exception as e:
+            logger.error(f"Failed to load the ISD Window: {e}")
+
+        # now select each element type in the ISD window
+        ele_types = ele_type.split("_")[1:]
+        for idx, ele in enumerate(ele_types):
+            combo_box = isd_window.child_window(
+                auto_id=UI_FIELDS["isd_ele_type"]["auto_id"][idx],
+                control_type="ComboBox",
+                class_name=UI_FIELDS["isd_ele_type"]["class_name"],
+            )
+            combo_box.click_input()
+            list_items = combo_box.descendants(control_type="ListItem")
+            found = False
+            for item in list_items:
+                if hasattr(item, "window_text") and item.window_text() == ele:
+                    item.click_input()
+                    found = True
+                    break
+                elif hasattr(item, "texts") and ele in item.texts():
+                    item.click_input()
+                    found = True
+                    break
+            if not found:
+                logger.error(
+                    f"Could not find list item '{ele}' in combo box at index {idx}"
+                )
+
+        logger.info(f"Set ISD element type as {ele_type}")
+        ok_button = isd_window.child_window(
+            title="OK",
+            control_type="Button",
+            class_name="Button",
+        )
+        ok_button.click_input()
 
     def _handle_boron_notification_dialog(self):
         """
@@ -984,10 +1066,26 @@ class WaveUI:
                         int((pressure_end - pressure_start) / pressure_step) + 1
                     )
                 ]
-
-                element_type = config["element_type"]
+                # if element_type is ISD, i need to compress the combo as string
+                # add those combinations into the total combinations(EDGE case)
+                element_types = []
+                if config["element_type"] == "ISD":
+                    isd_element_types = self.config["optional"]["ISD"]
+                    if not isd_element_types:
+                        raise Exception("ISD values not found in the config json")
+                    for item in isd_element_types:
+                        compress_str = "ISD"
+                        for val in item:
+                            compress_str += f"_{val}"
+                        element_types.append(compress_str)
+                else:
+                    element_types = [config["element_type"]]
                 total_combinations = (
-                    len(pv_range) * len(els_range) * len(pressure_values) * len(conc_recycle_flow)
+                    len(pv_range)
+                    * len(els_range)
+                    * len(pressure_values)
+                    * len(element_types)
+                    * len(conc_recycle_flow)
                 )
                 logger.info(
                     f"Starting stage 1 parameter sweep with {total_combinations} combinations"
@@ -998,9 +1096,13 @@ class WaveUI:
                 if not self.launch_wave():
                     logger.error("Failed to launch WAVE. Aborting parameter sweep.")
                     return 0, 0
-                
-                for pv, els, pressure, cr_flow in itertools.product(
-                    pv_range, els_range, pressure_values, conc_recycle_flow
+
+                for pv, els, pressure, element_type, cr_flow in itertools.product(
+                    pv_range,
+                    els_range,
+                    pressure_values,
+                    element_types,
+                    conc_recycle_flow,
                 ):
                     cur_params = {
                         "stage": self.stages,
@@ -1008,9 +1110,9 @@ class WaveUI:
                         "els": els,
                         "element_type": element_type,
                         "feed_pressure": pressure,
-                        "cr_flow": cr_flow
+                        "cr_flow": cr_flow,
                     }
-
+                    logger.info(f"The current params are {cur_params}")
                     # Check if we need to restart the application
                     if restart_counter >= restart_threshold:
                         logger.info(
@@ -1175,7 +1277,9 @@ class WaveUI:
                         continue
 
                     # Process current stage combinations
-                    for target, cr_flow in itertools.product(valid_targets, conc_recycle_flow):
+                    for target, cr_flow in itertools.product(
+                        valid_targets, conc_recycle_flow
+                    ):
                         boost_pressure = round((target - feed_pressure), 1)
 
                         for pv, els in itertools.product(
@@ -1223,7 +1327,7 @@ class WaveUI:
                                 "element_type": cur_element_type,
                                 "boost_pressure": boost_pressure,
                                 "target_pressure": target,
-                                "cr_flow": cr_flow
+                                "cr_flow": cr_flow,
                             }
 
                             if self._process_parameter_combination(
@@ -1252,26 +1356,27 @@ class WaveUI:
         Returns:
             bool: True if successful, False otherwise
         """
-        
+
         # Determine which pressure parameter to use based on stage
         stage = cur_stage_params["stage"]
         pressure_param = cur_stage_params.get(
             "feed_pressure" if stage == 1 else "boost_pressure"
         )
-        
-        if cur_stage_params['element_type'] == "NF200-4040" and not (hasattr(self, "_boron_dialog_handled") and self._boron_dialog_handled):
+
+        if cur_stage_params["element_type"] == "NF200-4040" and not (
+            hasattr(self, "_boron_dialog_handled") and self._boron_dialog_handled
+        ):
             dialog_thread = threading.Thread(
-                target=self._handle_boron_notification_dialog,
-                daemon=True
+                target=self._handle_boron_notification_dialog, daemon=True
             )
             dialog_thread.start()
-            dialog_thread.join(timeout=5) 
-        
+            dialog_thread.join(timeout=5)
+
         # Switch to Reverse Osmosis tab and set parameters
         if not self.select_tab(TAB_REVERSE_OSMOSIS):
             logger.error("Failed to select Reverse Osmosis tab")
             return False
-        
+
         if not self.set_reverse_osmosis_parameters(
             cur_stage_params["pv"],
             cur_stage_params["els"],
